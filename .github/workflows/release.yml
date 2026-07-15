@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # semantic-release reads the conventional commits since the last tag and
+  # decides the version. It is the only thing that does: the image is tagged
+  # with whatever it picks, so a release and its image can never disagree.
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      - name: Release
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx --yes \
+            -p semantic-release \
+            -p @semantic-release/commit-analyzer \
+            -p @semantic-release/release-notes-generator \
+            -p @semantic-release/github \
+            semantic-release 2>&1 | tee release.log
+
+          # semantic-release exits 0 whether or not it published, so the log is
+          # what tells us which happened. grep must not kill the step when it
+          # finds nothing -- that is the ordinary "no release needed" path.
+          version="$(grep -oP 'Published release \K[0-9]+\.[0-9]+\.[0-9]+' release.log | tail -1 || true)"
+
+          if [[ -n "${version}" ]]; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "version=${version}" >> "$GITHUB_OUTPUT"
+            echo "released ${version}"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+
+            # A race, not a miss. When two commits land on main within seconds,
+            # the earlier commit's run reaches semantic-release after origin has
+            # already advanced, and it aborts with "behind the remote one"
+            # instead of publishing. That is benign: the newer commit has its own
+            # Release run, which publishes a cumulative release that ships this
+            # change too.
+            if grep -q 'behind the remote' release.log; then
+              echo "superseded by a newer push to main; its run publishes this change"
+              exit 0
+            fi
+
+            echo "no release warranted by these commits"
+
+            # ...but if the APP changed and no release came out, that is not a
+            # quiet no-op, it is a silent one. No release means no image, which
+            # means the change can never deploy. Fail loudly instead.
+            if git diff --name-only HEAD~1 HEAD \
+                 | grep -qE '^(toillprat/|Dockerfile|requirements\.txt)'; then
+              echo "::error::This commit changes the app but produced no release, so no image was built and the change can never deploy. Use a commit type semantic-release recognises (feat/fix/perf/revert), or a BREAKING CHANGE footer."
+              exit 1
+            fi
+          fi
+
+  # No release, no image: every published tag corresponds to a GitHub release.
+  publish:
+    needs: version
+    if: needs.version.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/brujoand/toillprat
+          # No `latest`: a deployment should name the version it wants, and a
+          # moving tag makes that impossible to do honestly. metadata-action adds
+          # `latest` alongside any semver tag unless told not to, so this flavor
+          # line is what actually suppresses it.
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.version.outputs.version }}
+            type=semver,pattern={{major}},value=${{ needs.version.outputs.version }}
+            type=sha,format=long
+
+      # A push to GHCR intermittently dies with "unknown blob" -- a transient
+      # registry flake, not a build problem. So the push gets one retry: the
+      # first attempt is allowed to fail, and an identical second attempt runs
+      # only if it did. The two `with` blocks are deliberately identical and MUST
+      # stay in sync; GitHub Actions has no YAML anchors to share them.
+      - name: Build and push
+        id: buildpush
+        continue-on-error: true
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # The same version the image is TAGGED with, baked into the image so it
+          # can say out loud what it is. One source, so the badge in the corner
+          # and the tag in the registry cannot drift apart.
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
+
+      - name: Build and push (retry)
+        if: steps.buildpush.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}

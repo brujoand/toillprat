@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+node_modules/
+*.egg-info/
+
+# Local runtime data (characters, chats, settings). Never commit it: it is a
+# user's content, not source.
+data/

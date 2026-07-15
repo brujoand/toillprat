@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v2
+
+      - name: Run pre-commit
+        run: pre-commit run --all-files --show-diff-on-failure
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest httpx
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Build the image
+        run: docker build --build-arg VERSION=0.0.0-ci -t toillprat:ci .
+
+      # The version badge is only worth having if it tells the truth, and it
+      # stops silently: a build-arg that never lands leaves every deployed image
+      # saying "dev" forever. The release workflow passes VERSION the same way,
+      # so if it arrives here it arrives there.
+      - name: The image knows what version it is
+        run: |
+          set -euo pipefail
+          got="$(docker run --rm toillprat:ci printenv APP_VERSION)"
+          if [[ "${got}" != "0.0.0-ci" ]]; then
+            echo "::error::the image reports its version as '${got}' -- the VERSION build-arg did not reach it, so a release would deploy a build that cannot say what it is."
+            exit 1
+          fi
