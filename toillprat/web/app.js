@@ -48,20 +48,55 @@ let editing = null; // character id being edited (null = creating)
 let muted = false;
 let voices = [];
 
-// One reusable player. Playing any sound through it inside a real tap "unlocks"
-// it, so the automatic reply-speech is then allowed to play — browsers block
-// audio.play() that isn't tied to a user gesture, which is why auto-speak was
-// silent even though the TTS request succeeded.
-const player = new Audio();
-let audioUnlocked = false;
-let lastAudioUrl = null;
+// Reply audio goes through the Web Audio API, not an <audio> element. On iOS
+// Safari an <audio> element flat-out refuses to play a Blob object URL, and it
+// blocks play() that isn't inside a real tap — and we always play *after* an
+// async fetch, so we're never inside the tap. An AudioContext sidesteps both:
+// resume() it inside a tap to "unlock" it, then decode the bytes and play them
+// ourselves, no media element and no autoplay gate.
+let audioCtx = null;
+let currentSource = null; // the clip playing right now, so mute can stop it
 
+function ensureAudioCtx() {
+  if (!audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) audioCtx = new Ctx();
+  }
+  return audioCtx;
+}
+
+// Call from inside a user gesture (a tap or submit) so iOS lets audio play
+// later, even when the actual playback happens after an await.
 function unlockAudio() {
-  if (audioUnlocked) return;
-  audioUnlocked = true;
-  player.src =
-    "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
-  player.play().then(() => player.pause()).catch(() => {});
+  const ctx = ensureAudioCtx();
+  if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+}
+
+function stopAudio() {
+  if (!currentSource) return;
+  try {
+    currentSource.stop();
+  } catch (_) {
+    /* already ended */
+  }
+  currentSource = null;
+}
+
+// Voice is best-effort, but not silently: if it fails, say why in a brief toast
+// so "no sound" doesn't just look like the app is broken.
+let audioMsgTimer = null;
+function showAudioError(msg) {
+  let el = $("#audio-msg");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "audio-msg";
+    el.className = "audio-msg";
+    document.body.appendChild(el);
+  }
+  el.textContent = "🔇 " + msg;
+  el.classList.add("show");
+  clearTimeout(audioMsgTimer);
+  audioMsgTimer = setTimeout(() => el.classList.remove("show"), 6000);
 }
 
 // --- Home grid --------------------------------------------------------------
@@ -193,28 +228,58 @@ $("#send-form").addEventListener("submit", (e) => {
 
 async function speak(text) {
   if (muted || !text) return;
+  const ctx = ensureAudioCtx();
+  if (!ctx) return;
+  // Whether we got here from an auto-reply or a tap on the speaker button, make
+  // sure the context is running; a tap is what lets iOS grant this.
+  if (ctx.state === "suspended") {
+    try {
+      await ctx.resume();
+    } catch (_) {
+      /* stays suspended — playback below just won't make sound */
+    }
+  }
+
+  let resp;
   try {
-    const resp = await fetch("/api/tts", {
+    resp = await fetch("/api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, voice: current && current.voice }),
     });
-    if (!resp.ok) return;
-    const blob = await resp.blob();
-    if (lastAudioUrl) URL.revokeObjectURL(lastAudioUrl);
-    lastAudioUrl = URL.createObjectURL(blob);
-    player.src = lastAudioUrl;
-    player.currentTime = 0;
-    player.play().catch(() => {});
   } catch (_) {
-    /* audio is best-effort */
+    showAudioError("Couldn't reach the server for audio.");
+    return;
   }
+  if (!resp.ok) {
+    showAudioError(`Voice unavailable (error ${resp.status}).`);
+    return;
+  }
+
+  let buffer;
+  try {
+    // decodeAudioData needs the raw bytes; no Blob URL, which iOS won't play.
+    buffer = await ctx.decodeAudioData(await resp.arrayBuffer());
+  } catch (_) {
+    showAudioError("The voice audio couldn't be played.");
+    return;
+  }
+
+  stopAudio(); // only the newest reply speaks
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(ctx.destination);
+  src.onended = () => {
+    if (currentSource === src) currentSource = null;
+  };
+  currentSource = src;
+  src.start(0);
 }
 
 $("#mute-btn").addEventListener("click", () => {
   muted = !muted;
   $("#mute-btn").textContent = muted ? "🔇" : "🔊";
-  if (muted) player.pause();
+  if (muted) stopAudio();
 });
 
 // --- Editor -----------------------------------------------------------------
