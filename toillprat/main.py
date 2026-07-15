@@ -62,6 +62,14 @@ DEFAULT_VOICE = os.environ.get("DEFAULT_VOICE", "").strip()
 # characters, so we still map it back to "unset" rather than send it to the TTS.
 _UNSET_VOICES = {"", "default"}
 
+# Talking to the TTS server. The connect timeout is short on purpose: if the
+# server is unreachable (wrong CHATTERBOX_URL, service down), fail in a few
+# seconds with a clear error instead of hanging -- long enough that a gateway in
+# front of us times out first and returns its own opaque 503. Reads get a long
+# budget because synthesis is genuinely slow; listing voices does not.
+TTS_SPEECH_TIMEOUT = httpx.Timeout(120.0, connect=5.0)
+TTS_VOICES_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+
 # Stamped into the image at build time by the Dockerfile's ARG, from the same
 # version semantic-release tagged the image with. "dev" when run from a checkout.
 VERSION = os.environ.get("APP_VERSION", "dev")
@@ -560,7 +568,7 @@ async def _fetch_voices() -> list[str]:
     but be liberal about the shape so any OpenAI-compatible server works.
     """
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=TTS_VOICES_TIMEOUT) as client:
             resp = await client.get(f"{CHATTERBOX_URL}/v1/audio/voices")
             resp.raise_for_status()
             data = resp.json()
@@ -608,11 +616,21 @@ async def api_tts(request: Request) -> Response:
         "response_format": "mp3",
     }
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=TTS_SPEECH_TIMEOUT) as client:
             resp = await client.post(f"{CHATTERBOX_URL}/v1/audio/speech", json=payload)
             resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        # The server answered, but unhappily -- pass its own status along.
+        raise HTTPException(
+            status_code=502,
+            detail=f"TTS server returned {exc.response.status_code}.",
+        ) from exc
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"TTS failed: {exc}") from exc
+        # Never got a reply: unreachable, wrong URL, or timed out.
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach the TTS server: {exc}",
+        ) from exc
     return Response(
         content=resp.content,
         media_type=resp.headers.get("content-type", "audio/mpeg"),
