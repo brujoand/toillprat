@@ -19,6 +19,7 @@ import os
 import re
 import struct
 import uuid
+import zlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -215,18 +216,38 @@ def effective_model(char: dict | None = None) -> str:
     return load_settings().get("default_model") or DEFAULT_MODEL
 
 
-# --- SillyTavern character-card v2 import -----------------------------------
+# --- Character-card import (SillyTavern + Character.AI style) ----------------
 
 
 def _card_to_character(card: dict) -> dict:
-    """Map a SillyTavern card (v2 `spec_version` wrapper or flat v1) to ours."""
+    """Map an imported character card to our schema.
+
+    Handles both a SillyTavern v2 card (fields under a `data` wrapper, using
+    `first_mes` / `mes_example`) and a flat v1 or Character.AI-style export
+    (`greeting`, `description`, `definition`, `title`). Character.AI splits the
+    persona across a short `description` and a long `definition`; keep both.
+    """
     data = card.get("data") if isinstance(card.get("data"), dict) else card
+
+    def pick(*keys: str) -> str:
+        for source in (data, card):
+            if not isinstance(source, dict):
+                continue
+            for key in keys:
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    description = pick("description", "personality")
+    definition = pick("definition")
+    persona = "\n\n".join(part for part in (description, definition) if part)
     return normalize_character(
         {
-            "name": data.get("name") or card.get("name"),
-            "greeting": data.get("first_mes") or card.get("first_mes"),
-            "persona": data.get("description") or card.get("description"),
-            "example_dialogue": data.get("mes_example") or card.get("mes_example"),
+            "name": pick("name", "title", "char_name"),
+            "greeting": pick("first_mes", "greeting", "char_greeting"),
+            "persona": persona,
+            "example_dialogue": pick("mes_example", "example_dialogue"),
         }
     )
 
@@ -241,10 +262,12 @@ def _extract_card_from_png(raw: bytes) -> dict:
         ctype = raw[pos + 4 : pos + 8]
         body = raw[pos + 8 : pos + 8 + length]
         pos += 12 + length  # 4 len + 4 type + data + 4 crc
-        if ctype == b"tEXt":
-            keyword, _, value = body.partition(b"\x00")
-            if keyword == b"chara":
+        keyword, _, value = body.partition(b"\x00")
+        if keyword == b"chara":
+            if ctype == b"tEXt":
                 return json.loads(base64.b64decode(value))
+            if ctype == b"zTXt":  # 1 compression-method byte, then zlib data
+                return json.loads(base64.b64decode(zlib.decompress(value[1:])))
         if ctype == b"IEND":
             break
     raise ValueError("no character card found in PNG")
@@ -362,6 +385,32 @@ async def api_import_character(file: UploadFile) -> dict:
             detail=f"Could not read that character file: {exc}",
         ) from exc
     return save_character(_card_to_character(card))
+
+
+@app.post("/api/characters/parse")
+async def api_parse_character(request: Request) -> dict:
+    """Turn pasted text into character fields for the editor -- without saving.
+
+    Character.AI can't be exported, so the realistic path is to copy a friend's
+    details off the page and paste them here. Pasted JSON (an exported card) is
+    mapped like a file import; anything else is treated as the persona, leaving
+    the rest for the user to fill in. Nothing is persisted -- the form is.
+    """
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="nothing to parse")
+    try:
+        card = json.loads(text)
+    except json.JSONDecodeError:
+        card = None
+    if isinstance(card, dict):
+        char = _card_to_character(card)
+    else:
+        # Not a card: use the raw text as the persona, name left for the user.
+        char = {"name": "", "greeting": "", "persona": text, "example_dialogue": ""}
+    keys = ("name", "greeting", "persona", "example_dialogue")
+    return {key: char[key] for key in keys}
 
 
 # --- Chat history -----------------------------------------------------------

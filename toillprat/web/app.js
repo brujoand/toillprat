@@ -297,6 +297,8 @@ async function openEditor(id) {
   $("#avatar-preview").dataset.url = char.avatar || "";
   renderVoiceOptions(char.voice);
   $("#delete-btn").classList.toggle("hidden", !id);
+  $("#paste-input").value = "";
+  $(".paste-block").open = false;
   show("editor");
 }
 
@@ -382,6 +384,40 @@ $("#import-input").addEventListener("change", async (e) => {
   show("home");
 });
 
+// Paste a friend's details (or an exported JSON) and fill the editor fields.
+// Only overwrites a field when the paste actually yielded something for it, so
+// half-filled pastes don't wipe what's already typed.
+$("#paste-fill-btn").addEventListener("click", async () => {
+  const text = $("#paste-input").value.trim();
+  if (!text) return;
+  let data = null;
+  try {
+    const resp = await fetch("/api/characters/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (resp.ok) data = await resp.json();
+  } catch (_) {
+    /* fall through to the alert */
+  }
+  if (!data) {
+    alert("Couldn't read that. Paste the details, or an exported character JSON.");
+    return;
+  }
+  const fields = {
+    "#f-name": data.name,
+    "#f-greeting": data.greeting,
+    "#f-persona": data.persona,
+    "#f-example": data.example_dialogue,
+  };
+  for (const [sel, value] of Object.entries(fields)) {
+    if (value) $(sel).value = value;
+  }
+  $("#paste-input").value = "";
+  $(".paste-block").open = false;
+});
+
 // --- Settings ---------------------------------------------------------------
 
 let modelsLoaded = false;
@@ -457,6 +493,7 @@ document.body.addEventListener("click", (e) => {
   if (action === "home") show("home");
   if (action === "reset") resetChat();
   if (action === "settings") openSettings();
+  if (action === "edit" && current) openEditor(current.id);
 });
 
 async function resetChat() {
