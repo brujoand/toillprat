@@ -252,7 +252,17 @@ async function speak(text) {
     return;
   }
   if (!resp.ok) {
-    showAudioError(`Voice unavailable (error ${resp.status}).`);
+    // Show the server's reason when it gave one (our /api/tts sends a JSON
+    // {detail}); otherwise a bare code, which usually means a proxy answered.
+    let detail = "";
+    try {
+      detail = ((await resp.json()) || {}).detail || "";
+    } catch (_) {
+      /* not JSON — e.g. a gateway error page */
+    }
+    showAudioError(
+      detail ? `Voice: ${detail}` : `Voice unavailable (error ${resp.status}).`,
+    );
     return;
   }
 

@@ -243,3 +243,63 @@ def test_tts_sends_a_resolved_voice_not_the_bogus_default(auth_client, monkeypat
     resp = auth_client.post("/api/tts", json={"text": "hi", "voice": "default"})
     assert resp.status_code == 200
     assert captured["voice"] == "Alice.wav"
+
+
+def _tts_client_that(behaviour):
+    """A fake httpx.AsyncClient whose .post runs `behaviour(url, json)`."""
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None):
+            return behaviour(url, json)
+
+    return _Client
+
+
+def test_tts_reports_an_unreachable_server_clearly(auth_client, monkeypatch):
+    import httpx
+
+    async def voices():
+        return ["Alice.wav"]
+
+    def refuse(url, json):
+        raise httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(main, "_fetch_voices", voices)
+    monkeypatch.setattr(main, "DEFAULT_VOICE", "")
+    monkeypatch.setattr(main.httpx, "AsyncClient", _tts_client_that(refuse))
+
+    resp = auth_client.post("/api/tts", json={"text": "hi"})
+    assert resp.status_code == 502
+    assert "Could not reach the TTS server" in resp.json()["detail"]
+
+
+def test_tts_passes_through_the_servers_own_error_status(auth_client, monkeypatch):
+    import httpx
+
+    async def voices():
+        return ["Alice.wav"]
+
+    class _Resp:
+        def raise_for_status(self):
+            req = httpx.Request("POST", "http://tts/v1/audio/speech")
+            raise httpx.HTTPStatusError(
+                "err", request=req, response=httpx.Response(503, request=req)
+            )
+
+    monkeypatch.setattr(main, "_fetch_voices", voices)
+    monkeypatch.setattr(main, "DEFAULT_VOICE", "")
+    client = _tts_client_that(lambda u, j: _Resp())
+    monkeypatch.setattr(main.httpx, "AsyncClient", client)
+
+    resp = auth_client.post("/api/tts", json={"text": "hi"})
+    assert resp.status_code == 502
+    assert "503" in resp.json()["detail"]
