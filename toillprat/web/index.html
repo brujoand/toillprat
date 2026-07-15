@@ -34,6 +34,7 @@
         <img id="chat-avatar" class="bar-avatar" alt="" />
         <span id="chat-name" class="bar-name"></span>
         <button class="icon-btn" id="mute-btn" aria-label="Mute">🔊</button>
+        <button class="icon-btn" data-action="edit" aria-label="Edit friend">✏️</button>
         <button class="icon-btn" data-action="reset" aria-label="Start over">↺</button>
       </header>
       <div id="messages" class="messages"></div>
@@ -69,9 +70,20 @@
             <input id="import-input" type="file" accept=".json,.png" hidden />
           </label>
         </div>
+        <details class="paste-block">
+          <summary>Paste from Character.AI or another app</summary>
+          <textarea id="paste-input" rows="4"
+                    placeholder="Paste the friend's details here — or an exported character JSON."></textarea>
+          <button type="button" class="big-btn ghost" id="paste-fill-btn">Fill the form</button>
+          <p class="hint">
+            Character.AI can't be exported, so copy the name, greeting and
+            description off its page and paste them here. Pasted character JSON
+            is understood too.
+          </p>
+        </details>
         <p class="hint">
-          Import a character card (<code>.json</code> or <code>.png</code>) from
-          SillyTavern, or one exported from Character.AI with a card exporter.
+          Or import a character card (<code>.json</code> or <code>.png</code>)
+          from SillyTavern or a Character.AI card exporter.
         </p>
       </div>
     </section>

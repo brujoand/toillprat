@@ -330,6 +330,31 @@ body {
   border-radius: 6px;
 }
 
+.paste-block {
+  border: 2px solid #e5def7;
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.paste-block summary {
+  cursor: pointer;
+  font-size: 17px;
+  color: var(--accent);
+  list-style: none;
+}
+
+.paste-block summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Don't let .big-btn's flex-grow stretch the button in this column. */
+.paste-block .big-btn {
+  flex: 0 0 auto;
+}
+
 /* --- Login --------------------------------------------------------------- */
 
 .login-form {

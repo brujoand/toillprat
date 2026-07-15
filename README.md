@@ -1,8 +1,12 @@
 # toillprat
 
 A small, tablet-friendly character chat app. Pick an avatar, type a message, and
-read *and hear* the reply. Characters can be created in the app or imported from
-SillyTavern-style character cards (`.json` or `.png`).
+read *and hear* the reply. Characters can be created and edited in the app, or
+brought in three ways: a SillyTavern/Character.AI card file (`.json` or `.png`),
+or by pasting a friend's details (or an exported JSON) into the editor's *Paste*
+box — handy for Character.AI, which has no export, so you copy the name, greeting
+and description off its page. (Importing directly from a Character.AI *link*
+isn't supported: the site is auth-gated behind Cloudflare and can't be fetched.)
 
 It is deliberately tiny: a single FastAPI process serving a static frontend, with
 two pluggable backends chosen entirely by environment variables:

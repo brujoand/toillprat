@@ -9,6 +9,10 @@ whole app is handed to anyone who can set a header.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import struct
+import zlib
 
 from toillprat import main
 
@@ -95,6 +99,113 @@ def test_effective_model_prefers_character_then_settings_then_env():
 
 def test_healthz_is_open(client):
     assert client.get("/healthz").json() == {"ok": True}
+
+
+# --- Editing an existing friend ---------------------------------------------
+
+
+def test_editing_a_friend_updates_it_in_place(auth_client):
+    created = auth_client.post(
+        "/api/characters", json={"name": "Ziggy", "persona": "a shy dragon"}
+    ).json()
+    char_id = created["id"]
+    auth_client.put(
+        f"/api/characters/{char_id}",
+        json={"name": "Ziggy", "persona": "a bold dragon", "greeting": "Rawr!"},
+    )
+    again = auth_client.get(f"/api/characters/{char_id}").json()
+    assert again["id"] == char_id  # same friend, not a new one
+    assert again["persona"] == "a bold dragon"
+    assert again["greeting"] == "Rawr!"
+
+
+# --- Import: SillyTavern + Character.AI card shapes --------------------------
+
+
+def test_import_maps_a_sillytavern_v2_card():
+    card = {
+        "spec": "chara_card_v2",
+        "data": {
+            "name": "Nova",
+            "first_mes": "Hi, I'm Nova.",
+            "description": "A curious astronaut.",
+            "mes_example": "{{char}}: To the stars!",
+        },
+    }
+    char = main._card_to_character(card)
+    assert char["name"] == "Nova"
+    assert char["greeting"] == "Hi, I'm Nova."
+    assert char["persona"] == "A curious astronaut."
+    assert char["example_dialogue"] == "{{char}}: To the stars!"
+
+
+def test_import_maps_a_character_ai_style_export():
+    # Character.AI uses greeting/definition/title and splits persona across a
+    # short description and a long definition -- both should be kept.
+    card = {
+        "name": "Pip",
+        "title": "the tiny inventor",
+        "greeting": "Hello! Want to build something?",
+        "description": "A cheerful gadgeteer.",
+        "definition": "{{char}} loves tinkering and explains ideas simply.",
+    }
+    char = main._card_to_character(card)
+    assert char["name"] == "Pip"
+    assert char["greeting"] == "Hello! Want to build something?"
+    assert "A cheerful gadgeteer." in char["persona"]
+    assert "loves tinkering" in char["persona"]
+
+
+def _png_with_chara(card: dict, compressed: bool) -> bytes:
+    """A minimal PNG carrying a SillyTavern 'chara' tEXt or zTXt chunk."""
+    payload = base64.b64encode(json.dumps(card).encode())
+    if compressed:
+        body = b"chara\x00" + b"\x00" + zlib.compress(payload)  # method byte + data
+        ctype = b"zTXt"
+    else:
+        body = b"chara\x00" + payload
+        ctype = b"tEXt"
+    chunk = struct.pack(">I", len(body)) + ctype + body + b"\x00\x00\x00\x00"
+    iend = struct.pack(">I", 0) + b"IEND" + b"\x00\x00\x00\x00"
+    return b"\x89PNG\r\n\x1a\n" + chunk + iend
+
+
+def test_import_reads_a_compressed_ztxt_png_card():
+    card = {"name": "Zed", "first_mes": "beep", "description": "a robot"}
+    parsed = main._extract_card_from_png(_png_with_chara(card, compressed=True))
+    assert parsed["name"] == "Zed"
+    # And the plain tEXt path still works.
+    parsed2 = main._extract_card_from_png(_png_with_chara(card, compressed=False))
+    assert parsed2["name"] == "Zed"
+
+
+# --- Paste box: /api/characters/parse fills the editor, saves nothing --------
+
+
+def test_parse_maps_pasted_json_without_saving(auth_client):
+    before = len(auth_client.get("/api/characters").json())
+    fields = auth_client.post(
+        "/api/characters/parse",
+        json={"text": json.dumps({"name": "Milo", "greeting": "Hey!"})},
+    ).json()
+    assert fields["name"] == "Milo"
+    assert fields["greeting"] == "Hey!"
+    # Parsing must not create a character.
+    assert len(auth_client.get("/api/characters").json()) == before
+
+
+def test_parse_treats_plain_text_as_persona(auth_client):
+    fields = auth_client.post(
+        "/api/characters/parse",
+        json={"text": "A grumpy but kind old wizard."},
+    ).json()
+    assert fields["persona"] == "A grumpy but kind old wizard."
+    assert fields["name"] == ""  # left for the user to fill
+
+
+def test_parse_rejects_empty_text(auth_client):
+    resp = auth_client.post("/api/characters/parse", json={"text": "  "})
+    assert resp.status_code == 400
 
 
 # --- Model listing respects the key's governance (allowed-models) -----------
