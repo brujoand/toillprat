@@ -51,7 +51,16 @@ DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "deepseek/deepseek-v3.2-exp")
 # Points at nothing in particular by default; set it to wherever your TTS server
 # lives. No default reveals or assumes any particular deployment.
 CHATTERBOX_URL = os.environ.get("CHATTERBOX_URL", "http://localhost:8004").rstrip("/")
-DEFAULT_VOICE = os.environ.get("DEFAULT_VOICE", "default")
+# A character with no voice of its own uses this. Empty (the default) means "let
+# the TTS server pick" -- we resolve it to the first voice the server offers, so
+# audio works out of the box. There is deliberately no literal "default" voice:
+# Chatterbox has no such thing and 404s on it, which silently killed all speech.
+DEFAULT_VOICE = os.environ.get("DEFAULT_VOICE", "").strip()
+
+# Voice values that mean "none chosen" -- treated as unset when resolving. The
+# "default" string is legacy: older builds hardcoded it and persisted it onto
+# characters, so we still map it back to "unset" rather than send it to the TTS.
+_UNSET_VOICES = {"", "default"}
 
 # Stamped into the image at build time by the Dockerfile's ARG, from the same
 # version semantic-release tagged the image with. "dev" when run from a checkout.
@@ -160,7 +169,7 @@ def normalize_character(data: dict, char_id: str | None = None) -> dict:
         "greeting": (data.get("greeting") or "").strip(),
         "persona": (data.get("persona") or "").strip(),
         "example_dialogue": (data.get("example_dialogue") or "").strip(),
-        "voice": (data.get("voice") or DEFAULT_VOICE).strip(),
+        "voice": (data.get("voice") or "").strip(),  # "" = resolve at TTS time
         "model": (data.get("model") or "").strip(),  # "" = use the default model
     }
 
@@ -255,7 +264,6 @@ def _seed_demo_character() -> None:
             "persona": "You are Robo, a cheerful, curious robot who loves making "
             "friends. You speak simply and kindly, ask fun questions, and are "
             "always encouraging. Keep replies short.",
-            "voice": DEFAULT_VOICE,
         }
     )
     save_character(demo)
@@ -488,18 +496,48 @@ async def api_put_settings(request: Request) -> JSONResponse:
     return JSONResponse(save_settings(data))
 
 
+async def _fetch_model_catalogue(
+    client: httpx.AsyncClient, url: str, headers: dict
+) -> list | None:
+    """The `data` list from an OpenAI-style /models response; None on failure.
+
+    None (an error) is distinct from [] (the server answered with no models),
+    so the caller can tell a missing endpoint from an empty allowlist.
+    """
+    try:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        return resp.json().get("data", [])
+    except (httpx.HTTPError, json.JSONDecodeError):
+        return None
+
+
 @app.get("/api/models")
 async def api_models() -> JSONResponse:
-    """Proxy the LLM provider's model catalogue as a simple id/name list."""
+    """List models as a simple id/name list, honouring the key's governance.
+
+    Prefer OpenRouter's caller-scoped catalogue (/models/user), which returns
+    only the models the key is allowed to use -- account guardrails, provider,
+    and privacy settings all applied. Fall back to the full public /models when
+    there's no key, or when the provider is a plain OpenAI-compatible server
+    with no such endpoint (a 404 there). An empty-but-successful /models/user is
+    the governance saying "these and no more", so it is used as-is, not widened.
+    """
     headers = {"X-Title": "toillprat"}
-    if OPENROUTER_API_KEY:
-        headers["Authorization"] = f"Bearer {OPENROUTER_API_KEY}"
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(f"{OPENROUTER_BASE_URL}/models", headers=headers)
-            resp.raise_for_status()
-            raw = resp.json().get("data", [])
-    except (httpx.HTTPError, json.JSONDecodeError):
+    auth = (
+        {"Authorization": f"Bearer {OPENROUTER_API_KEY}"} if OPENROUTER_API_KEY else {}
+    )
+    async with httpx.AsyncClient(timeout=15) as client:
+        raw = None
+        if OPENROUTER_API_KEY:
+            raw = await _fetch_model_catalogue(
+                client, f"{OPENROUTER_BASE_URL}/models/user", {**headers, **auth}
+            )
+        if raw is None:
+            raw = await _fetch_model_catalogue(
+                client, f"{OPENROUTER_BASE_URL}/models", {**headers, **auth}
+            )
+    if raw is None:
         return JSONResponse({"models": []})
     models = sorted(
         (
@@ -515,16 +553,46 @@ async def api_models() -> JSONResponse:
 # --- TTS + voices (proxy to the TTS server) ---------------------------------
 
 
-@app.get("/api/voices")
-async def api_voices() -> JSONResponse:
+async def _fetch_voices() -> list[str]:
+    """The TTS server's voice names (e.g. ["Emily.wav", ...]); [] if unreachable.
+
+    Chatterbox answers /v1/audio/voices with {"status": "ok", "voices": [...]},
+    but be liberal about the shape so any OpenAI-compatible server works.
+    """
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(f"{CHATTERBOX_URL}/v1/audio/voices")
             resp.raise_for_status()
-            return JSONResponse(resp.json())
-    except httpx.HTTPError:
-        # TTS server down / unreachable — offer the configured default only.
-        return JSONResponse({"voices": [DEFAULT_VOICE]})
+            data = resp.json()
+    except (httpx.HTTPError, json.JSONDecodeError):
+        return []
+    raw = data.get("voices") if isinstance(data, dict) else data
+    return [v for v in raw if isinstance(v, str)] if isinstance(raw, list) else []
+
+
+async def _resolve_voice(requested: str | None) -> str:
+    """Turn a character's stored voice into one the TTS server will accept.
+
+    An explicit choice is honoured as-is (it may be a reference-audio clone the
+    voices listing doesn't enumerate). Only an unset/legacy-"default" voice is
+    resolved: to DEFAULT_VOICE if configured, else the first voice on offer.
+    """
+    requested = (requested or "").strip()
+    if requested.lower() not in _UNSET_VOICES:
+        return requested
+    if DEFAULT_VOICE:
+        return DEFAULT_VOICE
+    voices = await _fetch_voices()
+    return voices[0] if voices else requested
+
+
+@app.get("/api/voices")
+async def api_voices() -> JSONResponse:
+    voices = await _fetch_voices()
+    if not voices and DEFAULT_VOICE:
+        # TTS server down / lists nothing — offer the configured default only.
+        voices = [DEFAULT_VOICE]
+    return JSONResponse({"voices": voices})
 
 
 @app.post("/api/tts")
@@ -536,7 +604,7 @@ async def api_tts(request: Request) -> Response:
     payload = {
         "model": "chatterbox",
         "input": text,
-        "voice": body.get("voice") or DEFAULT_VOICE,
+        "voice": await _resolve_voice(body.get("voice")),
         "response_format": "mp3",
     }
     try:

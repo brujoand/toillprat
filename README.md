@@ -38,10 +38,15 @@ Everything is an environment variable; nothing is baked in.
 | `OPENROUTER_BASE_URL`| `https://openrouter.ai/api/v1` | Any OpenAI-compatible chat-completions endpoint.                    |
 | `DEFAULT_MODEL`      | `deepseek/deepseek-v3.2-exp`   | Model used when a character has none of its own. Overridable in-app. |
 | `CHATTERBOX_URL`     | `http://localhost:8004`        | OpenAI-compatible TTS server for spoken replies.                    |
-| `DEFAULT_VOICE`      | `default`                      | Voice name passed to the TTS server.                                |
+| `DEFAULT_VOICE`      | *(empty)*                      | Voice for a character that hasn't chosen one. Empty = use the first voice the TTS server offers. |
 | `DATA_DIR`           | `/data`                        | Where characters, chats, and settings persist.                      |
 | `TRUSTED_PROXY_AUTH` | *(off)*                        | See **Login** below. Only set behind a trusted, sole-access proxy.  |
 | `SECURE_COOKIE`      | *(off)*                        | Set to `1` when serving over HTTPS so the session cookie is `Secure`. |
+
+The in-app model picker lists only the models your key is allowed to use: with
+an OpenRouter key it reads the caller-scoped catalogue (so account guardrails /
+allowed-models governance apply), and falls back to the full public catalogue
+for a plain OpenAI-compatible server that has no such endpoint.
 
 ## Login
 
