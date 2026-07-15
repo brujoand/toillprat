@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>Chat Friends</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <!-- Login: cookie mode only. In proxy mode the frontend never shows this,
+         because the proxy has already said who you are. -->
+    <section id="login" class="view hidden">
+      <h1 class="app-title">Chat Friends</h1>
+      <form id="login-form" class="form login-form">
+        <label>What's your name?
+          <input id="login-name" type="text" autocomplete="off" maxlength="24" />
+        </label>
+        <button class="big-btn" type="submit">Start</button>
+        <p class="hint" id="login-status"></p>
+      </form>
+    </section>
+
+    <!-- Home: pick a character -->
+    <section id="home" class="view">
+      <button class="icon-btn settings-fab" data-action="settings" aria-label="Settings">⚙️</button>
+      <h1 class="app-title">Chat Friends</h1>
+      <div id="grid" class="grid"></div>
+    </section>
+
+    <!-- Chat -->
+    <section id="chat" class="view hidden">
+      <header class="bar">
+        <button class="icon-btn" data-action="home" aria-label="Back">‹</button>
+        <img id="chat-avatar" class="bar-avatar" alt="" />
+        <span id="chat-name" class="bar-name"></span>
+        <button class="icon-btn" id="mute-btn" aria-label="Mute">🔊</button>
+        <button class="icon-btn" data-action="reset" aria-label="Start over">↺</button>
+      </header>
+      <div id="messages" class="messages"></div>
+      <form id="send-form" class="composer">
+        <input id="msg-input" class="msg-input" type="text" autocomplete="off"
+               placeholder="Type a message…" />
+        <button class="send-btn" type="submit" aria-label="Send">➤</button>
+      </form>
+    </section>
+
+    <!-- Editor / create -->
+    <section id="editor" class="view hidden">
+      <header class="bar">
+        <button class="icon-btn" data-action="home" aria-label="Back">‹</button>
+        <span class="bar-name" id="editor-title">New friend</span>
+        <button class="icon-btn danger hidden" id="delete-btn" aria-label="Delete">🗑</button>
+      </header>
+      <div class="form">
+        <label class="avatar-pick">
+          <img id="avatar-preview" class="avatar-preview" alt="" />
+          <span>Tap to choose a picture</span>
+          <input id="avatar-input" type="file" accept="image/*" hidden />
+        </label>
+        <label>Name<input id="f-name" type="text" /></label>
+        <label>First thing they say<textarea id="f-greeting" rows="2"></textarea></label>
+        <label>Who they are<textarea id="f-persona" rows="4"></textarea></label>
+        <label>How they talk (optional)<textarea id="f-example" rows="3"></textarea></label>
+        <label>Voice<select id="f-voice"></select></label>
+        <div class="editor-actions">
+          <button class="big-btn" id="save-btn">Save</button>
+          <label class="big-btn ghost">
+            Import file
+            <input id="import-input" type="file" accept=".json,.png" hidden />
+          </label>
+        </div>
+        <p class="hint">
+          Import a character card (<code>.json</code> or <code>.png</code>) from
+          SillyTavern, or one exported from Character.AI with a card exporter.
+        </p>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="settings" class="view hidden">
+      <header class="bar">
+        <button class="icon-btn" data-action="home" aria-label="Back">‹</button>
+        <span class="bar-name">Settings</span>
+      </header>
+      <div class="form">
+        <label>AI model<select id="s-model"></select></label>
+        <p class="hint">
+          This is the "brain" that writes the replies. All friends use it unless a
+          friend has its own model. If replies stop working, pick another one.
+        </p>
+        <div class="editor-actions">
+          <button class="big-btn" id="settings-save-btn">Save</button>
+        </div>
+        <p class="hint" id="s-status"></p>
+      </div>
+    </section>
+
+    <!-- Running build, bottom-left. Answers "is my change live yet?" and hangs
+         off nothing, so it renders even if app.js throws on boot. -->
+    <div id="version" class="version-badge" hidden></div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
