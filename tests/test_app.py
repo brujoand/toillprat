@@ -492,11 +492,16 @@ def test_openrouter_tts_posts_to_openrouter_with_the_key(auth_client, monkeypatc
 
     resp = auth_client.post("/api/tts", json={"text": "hi", "voice": "af_heart"})
     assert resp.status_code == 200
-    assert resp.content == b"AUDIO"
     assert captured["url"] == f"{main.OPENROUTER_BASE_URL}/audio/speech"
     assert captured["json"]["model"] == main.OPENROUTER_TTS_MODEL
     assert captured["json"]["voice"] == "af_heart"
+    # PCM in, so decodeAudioData gets one WAV container and plays the whole reply,
+    # not just the first sentence of a concatenated-MP3 response.
+    assert captured["json"]["response_format"] == "pcm"
     assert captured["headers"]["Authorization"] == "Bearer sk-test"
+    # The raw PCM comes back wrapped in a WAV header the browser can decode.
+    assert resp.content[:4] == b"RIFF"
+    assert resp.content.endswith(b"AUDIO")
 
 
 def test_openrouter_tts_surfaces_the_services_error_reason(auth_client, monkeypatch):
@@ -539,3 +544,19 @@ def test_openrouter_tts_without_a_key_fails_clearly(auth_client, monkeypatch):
     auth_client.put("/api/settings", json={"tts_engine": "openrouter"})
     resp = auth_client.post("/api/tts", json={"text": "hi"})
     assert resp.status_code == 502
+
+
+def test_pcm_is_wrapped_into_a_valid_wav():
+    # Hand-rolled header, so prove a real WAV parser accepts it and the samples
+    # survive intact -- otherwise the browser would decode silence or noise.
+    import io
+    import wave
+
+    pcm = b"\x01\x02\x03\x04" * 500  # 1000 16-bit mono samples
+    data = main._pcm_to_wav(pcm, 24000)
+    assert data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+    with wave.open(io.BytesIO(data)) as w:
+        assert w.getframerate() == 24000
+        assert w.getnchannels() == 1
+        assert w.getsampwidth() == 2  # 16-bit
+        assert w.readframes(w.getnframes()) == pcm
