@@ -122,6 +122,32 @@ def test_saving_the_model_leaves_the_tts_engine_untouched(auth_client):
     assert body["tts_engine"] == "device"
 
 
+def test_autoplay_defaults_to_on_in_config_and_settings(auth_client):
+    # On by default so replies keep speaking themselves for anyone who liked that.
+    assert auth_client.get("/api/config").json()["autoplay"] == "on"
+    assert auth_client.get("/api/settings").json()["autoplay"] == "on"
+
+
+def test_turning_autoplay_off_persists_and_shows_up_at_boot(auth_client):
+    auth_client.put("/api/settings", json={"autoplay": "off"})
+    assert auth_client.get("/api/settings").json()["autoplay"] == "off"
+    # The frontend reads autoplay from /api/config on boot, so it must be there.
+    assert auth_client.get("/api/config").json()["autoplay"] == "off"
+
+
+def test_an_unknown_autoplay_value_falls_back_to_on(auth_client):
+    auth_client.put("/api/settings", json={"autoplay": "maybe"})
+    assert auth_client.get("/api/settings").json()["autoplay"] == "on"
+
+
+def test_saving_autoplay_leaves_the_other_voice_settings_untouched(auth_client):
+    auth_client.put("/api/settings", json={"tts_engine": "device"})
+    auth_client.put("/api/settings", json={"autoplay": "off"})
+    body = auth_client.get("/api/settings").json()
+    assert body["autoplay"] == "off"
+    assert body["tts_engine"] == "device"
+
+
 def test_healthz_is_open(client):
     assert client.get("/healthz").json() == {"ok": True}
 
