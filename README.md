@@ -16,7 +16,9 @@ two pluggable backends chosen entirely by environment variables:
 - an **OpenAI-compatible TTS server** ([Chatterbox](https://github.com/devnen/Chatterbox-TTS-Server))
   for the spoken audio — or, chosen in Settings, the **device's own built-in
   voice** (the browser's Web Speech API): instant and offline, no server or GPU,
-  at the cost of a generic voice instead of each friend's custom one.
+  at the cost of a generic voice instead of each friend's custom one. Each friend
+  can be given its own language/accent for the device voice (e.g. British vs
+  American English), picked from the voices the device actually has.
 
 Characters, chat history, and settings are stored as plain JSON under `DATA_DIR`
 and are shared by everyone using the instance.

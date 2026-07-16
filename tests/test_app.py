@@ -169,6 +169,19 @@ def test_editing_a_friend_updates_it_in_place(auth_client):
     assert again["greeting"] == "Rawr!"
 
 
+def test_a_friend_keeps_its_own_device_voice_language(auth_client):
+    created = auth_client.post(
+        "/api/characters", json={"name": "Guv", "speech_lang": "en-GB"}
+    ).json()
+    assert created["speech_lang"] == "en-GB"
+    stored = auth_client.get(f"/api/characters/{created['id']}").json()
+    assert stored["speech_lang"] == "en-GB"
+
+
+def test_speech_lang_defaults_to_empty_meaning_app_default():
+    assert main.normalize_character({"name": "Nemo"})["speech_lang"] == ""
+
+
 # --- Import: SillyTavern + Character.AI card shapes --------------------------
 
 

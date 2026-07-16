@@ -97,6 +97,26 @@ if (window.speechSynthesis) {
   window.speechSynthesis.onvoiceschanged = pickEnglishVoice;
 }
 
+function normLang(lang) {
+  return (lang || "").toLowerCase().replace("_", "-");
+}
+
+// The best device voice for a friend's chosen language/accent (a BCP-47 tag).
+// Exact region match wins (en-GB), then the base language (en-*), then the
+// English default so a friend never falls back to the OS-locale voice.
+function pickVoiceForLang(lang) {
+  if (!window.speechSynthesis) return null;
+  const want = normLang(lang);
+  if (!want) return englishVoice;
+  const voices = window.speechSynthesis.getVoices() || [];
+  const base = want.split("-")[0];
+  return (
+    voices.find((v) => normLang(v.lang) === want) ||
+    voices.find((v) => normLang(v.lang).split("-")[0] === base) ||
+    englishVoice
+  );
+}
+
 // Call from inside a user gesture (a tap or submit) so iOS lets audio play
 // later, even when the actual playback happens after an await. Primes both
 // engines: the AudioContext for Chatterbox audio, and speechSynthesis for the
@@ -275,16 +295,18 @@ $("#send-form").addEventListener("submit", (e) => {
 
 // The OS/browser built-in voice: instant, offline, no server or GPU. The
 // trade-off is a generic device voice, not a character's custom Chatterbox one.
-function speakDevice(text) {
+// `lang` is the friend's chosen BCP-47 tag; empty means the English default.
+function speakDevice(text, lang) {
   if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === "undefined") {
     return false;
   }
   window.speechSynthesis.cancel(); // only the newest reply speaks
+  if (!englishVoice) pickEnglishVoice(); // voices may have loaded since boot
+  const voice = pickVoiceForLang(lang);
   const utter = new SpeechSynthesisUtterance(text);
   utter.rate = 1;
-  utter.lang = SPEECH_LANG;
-  if (!englishVoice) pickEnglishVoice(); // voices may have loaded since boot
-  if (englishVoice) utter.voice = englishVoice;
+  utter.lang = lang || SPEECH_LANG;
+  if (voice) utter.voice = voice;
   window.speechSynthesis.speak(utter);
   return true;
 }
@@ -293,7 +315,7 @@ async function speak(text) {
   if (muted || !text) return;
 
   if (ttsEngine === "device") {
-    if (speakDevice(text)) return;
+    if (speakDevice(text, current && current.speech_lang)) return;
     // No device speech here — fall through to the server so audio still works.
   }
 
@@ -365,10 +387,57 @@ async function openEditor(id) {
   paintAvatar($("#avatar-preview"), char);
   $("#avatar-preview").dataset.url = char.avatar || "";
   renderVoiceOptions(char.voice);
+  renderLanguageOptions(char.speech_lang || "");
   $("#delete-btn").classList.toggle("hidden", !id);
   $("#paste-input").value = "";
   $(".paste-block").open = false;
   show("editor");
+}
+
+// A readable label for a BCP-47 tag, e.g. "en-GB" -> "English (United Kingdom)".
+function langLabel(lang) {
+  try {
+    const [base, region] = lang.split("-");
+    // English labels, to match the app's English UI regardless of OS locale.
+    let label = new Intl.DisplayNames(["en"], { type: "language" }).of(base) || base;
+    if (region) {
+      const rn = new Intl.DisplayNames(["en"], { type: "region" }).of(region);
+      if (rn) label += ` (${rn})`;
+    }
+    return label;
+  } catch (_) {
+    return lang;
+  }
+}
+
+// Fill the language/accent dropdown from the voices this device actually has,
+// so every option is one that will really work here. "Default (English)" first.
+function renderLanguageOptions(selected) {
+  const sel = $("#f-speech-lang");
+  sel.innerHTML = "";
+  const voiceList = window.speechSynthesis
+    ? window.speechSynthesis.getVoices() || []
+    : [];
+  // De-dupe case-insensitively but keep each tag's canonical casing (en-GB).
+  const langs = new Map(); // normalised key -> {tag, label}
+  for (const v of voiceList) {
+    const tag = (v.lang || "").replace("_", "-");
+    const key = tag.toLowerCase();
+    if (tag && !langs.has(key)) langs.set(key, { tag, label: langLabel(tag) });
+  }
+  // Keep a previously-saved choice selectable even if this device lacks it.
+  if (selected && !langs.has(normLang(selected))) {
+    langs.set(normLang(selected), { tag: selected, label: langLabel(selected) });
+  }
+  const options = [{ tag: "", label: "Default (English)" }, ...langs.values()];
+  options.sort((a, b) => (a.tag === "" ? -1 : b.tag === "" ? 1 : a.label.localeCompare(b.label)));
+  for (const { tag, label } of options) {
+    const opt = document.createElement("option");
+    opt.value = tag;
+    opt.textContent = tag ? `${label} — ${tag}` : label;
+    if (normLang(tag) === normLang(selected)) opt.selected = true;
+    sel.appendChild(opt);
+  }
 }
 
 async function ensureVoices() {
@@ -415,6 +484,7 @@ $("#save-btn").addEventListener("click", async () => {
     persona: $("#f-persona").value,
     example_dialogue: $("#f-example").value,
     voice: $("#f-voice").value,
+    speech_lang: $("#f-speech-lang").value,
     avatar: $("#avatar-preview").dataset.url || "",
   };
   const url = editing ? `/api/characters/${editing}` : "/api/characters";
