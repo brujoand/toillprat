@@ -83,7 +83,16 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 
 # App-wide settings changeable from the UI (persisted to DATA_DIR). An empty
 # string means "fall back to the env default".
-DEFAULT_SETTINGS = {"default_model": "", "default_voice": ""}
+#
+# tts_engine picks who speaks the replies:
+#   "chatterbox" -- the TTS server (custom voices, but a network + GPU round-trip)
+#   "device"     -- the browser/OS built-in speech (instant, offline, no server)
+DEFAULT_SETTINGS = {
+    "default_model": "",
+    "default_voice": "",
+    "tts_engine": "chatterbox",
+}
+TTS_ENGINES = {"chatterbox", "device"}
 
 # Endpoints reachable without an identity: the config the frontend boots from,
 # and the login/logout flow itself. Everything else under /api/ requires one.
@@ -196,7 +205,10 @@ def load_settings() -> dict:
             data = json.loads(SETTINGS_PATH.read_text())
         except json.JSONDecodeError:
             data = {}
-    return {key: data.get(key, default) for key, default in DEFAULT_SETTINGS.items()}
+    result = {key: data.get(key, default) for key, default in DEFAULT_SETTINGS.items()}
+    if result["tts_engine"] not in TTS_ENGINES:
+        result["tts_engine"] = DEFAULT_SETTINGS["tts_engine"]
+    return result
 
 
 def save_settings(data: dict) -> dict:
@@ -205,6 +217,8 @@ def save_settings(data: dict) -> dict:
     for key in DEFAULT_SETTINGS:
         if key in data:
             current[key] = (data.get(key) or "").strip()
+    if current.get("tts_engine") not in TTS_ENGINES:
+        current["tts_engine"] = DEFAULT_SETTINGS["tts_engine"]
     SETTINGS_PATH.write_text(json.dumps(current, indent=2))
     return current
 
@@ -304,6 +318,9 @@ def api_config(request: Request) -> JSONResponse:
             "auth_mode": IDENTITY.mode,
             "login_enabled": IDENTITY.login_enabled,
             "me": player.name if player else None,
+            # Which voice engine to speak replies with; the frontend needs it up
+            # front, before the first reply, not just on the settings screen.
+            "tts_engine": load_settings()["tts_engine"],
         }
     )
 
@@ -532,6 +549,7 @@ def api_get_settings() -> JSONResponse:
         {
             "default_model": settings["default_model"],
             "default_voice": settings["default_voice"],
+            "tts_engine": settings["tts_engine"],
             # What chat uses when a character has no model of its own.
             "effective_model": settings["default_model"] or DEFAULT_MODEL,
             "env_default_model": DEFAULT_MODEL,

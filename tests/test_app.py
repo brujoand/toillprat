@@ -97,6 +97,31 @@ def test_effective_model_prefers_character_then_settings_then_env():
     assert main.effective_model(None) == main.DEFAULT_MODEL
 
 
+def test_tts_engine_defaults_to_chatterbox_in_config_and_settings(auth_client):
+    assert auth_client.get("/api/config").json()["tts_engine"] == "chatterbox"
+    assert auth_client.get("/api/settings").json()["tts_engine"] == "chatterbox"
+
+
+def test_choosing_the_device_voice_persists_and_shows_up_at_boot(auth_client):
+    auth_client.put("/api/settings", json={"tts_engine": "device"})
+    assert auth_client.get("/api/settings").json()["tts_engine"] == "device"
+    # The frontend reads the engine from /api/config on boot, so it must be there.
+    assert auth_client.get("/api/config").json()["tts_engine"] == "device"
+
+
+def test_an_unknown_tts_engine_falls_back_to_chatterbox(auth_client):
+    auth_client.put("/api/settings", json={"tts_engine": "banana"})
+    assert auth_client.get("/api/settings").json()["tts_engine"] == "chatterbox"
+
+
+def test_saving_the_model_leaves_the_tts_engine_untouched(auth_client):
+    auth_client.put("/api/settings", json={"tts_engine": "device"})
+    auth_client.put("/api/settings", json={"default_model": "a/b"})
+    body = auth_client.get("/api/settings").json()
+    assert body["default_model"] == "a/b"
+    assert body["tts_engine"] == "device"
+
+
 def test_healthz_is_open(client):
     assert client.get("/healthz").json() == {"ok": True}
 
