@@ -292,7 +292,11 @@ function speakDevice(text) {
 
 // Reflect "voice is being generated" on the speaker button (⏳ while working),
 // so there's always a sign something is happening -- and nothing fails silently.
+// Only one button shows the state at a time; starting a new one clears the last.
+let speakingBtn = null;
 function setSpeaking(btn, on) {
+  if (on && speakingBtn && speakingBtn !== btn) setSpeaking(speakingBtn, false);
+  speakingBtn = on ? btn : speakingBtn === btn ? null : speakingBtn;
   if (!btn) return;
   btn.disabled = on;
   btn.textContent = on ? "⏳" : "🔊";
@@ -311,11 +315,38 @@ async function ttsErrorMessage(resp) {
   return `Voice unavailable (error ${resp.status}).`;
 }
 
+// Roleplay actions in *asterisks* (e.g. "*giggles*") are stage directions, not
+// speech -- strip them so they're never read aloud. The bubble still shows them.
+function stripActions(text) {
+  return (text || "")
+    .replace(/\*[^*]*\*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Break a reply into sentences so we can speak (and fetch) them one at a time:
+// the first short clip plays almost at once instead of waiting for the whole
+// reply's audio. Sentence-ending punctuation is kept with its sentence.
+function splitSentences(text) {
+  const parts = text.match(/[^.!?…]+[.!?…]+|[^.!?…]+$/g) || [];
+  return parts.map((s) => s.trim()).filter(Boolean);
+}
+
+// Bumping this supersedes any in-flight speech: the pipeline checks it and bails,
+// so a new reply (or mute) cancels the old one cleanly.
+let speakToken = 0;
+function cancelSpeech() {
+  speakToken++;
+  stopAudio();
+}
+
 async function speak(text, btn) {
-  if (muted || !text) return;
+  if (muted) return;
+  const clean = stripActions(text);
+  if (!clean) return;
 
   if (ttsEngine === "device") {
-    if (speakDevice(text)) return;
+    if (speakDevice(clean)) return;
     // No device speech here — fall through to the server so audio still works.
   }
 
@@ -340,46 +371,79 @@ async function speak(text, btn) {
     return;
   }
 
-  setSpeaking(btn, true);
+  await speakServer(splitSentences(clean), btn, ctx);
+}
+
+// Fetch + decode one sentence's audio. Throws a friendly message on any failure
+// so the pipeline can surface it; returns an AudioBuffer on success.
+async function fetchClip(ctx, sentence) {
+  let resp;
   try {
-    let resp;
-    try {
-      resp = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, voice: current && current.voice }),
-      });
-    } catch (_) {
-      showAudioError("Couldn't reach the server for audio.");
-      return;
-    }
-    if (!resp.ok) {
-      showAudioError(await ttsErrorMessage(resp));
-      return;
-    }
+    resp = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: sentence, voice: current && current.voice }),
+    });
+  } catch (_) {
+    throw new Error("Couldn't reach the server for audio.");
+  }
+  if (!resp.ok) throw new Error(await ttsErrorMessage(resp));
+  try {
+    // decodeAudioData needs the raw bytes; no Blob URL, which iOS won't play.
+    return await ctx.decodeAudioData(await resp.arrayBuffer());
+  } catch (_) {
+    throw new Error("The voice audio couldn't be played.");
+  }
+}
 
-    let buffer;
-    try {
-      // decodeAudioData needs the raw bytes; no Blob URL, which iOS won't play.
-      buffer = await ctx.decodeAudioData(await resp.arrayBuffer());
-    } catch (_) {
-      showAudioError("The voice audio couldn't be played.");
-      return;
-    }
-    if (!buffer || !buffer.duration) {
-      showAudioError("The voice came back empty.");
-      return;
-    }
+// Start a clip's fetch without awaiting it, so the next sentence is generating
+// while the current one plays. The extra catch keeps a superseded prefetch from
+// tripping an unhandled-rejection; the real await below still sees any error.
+function prefetchClip(ctx, sentence) {
+  if (!sentence) return null;
+  const clip = fetchClip(ctx, sentence);
+  clip.catch(() => {});
+  return clip;
+}
 
-    stopAudio(); // only the newest reply speaks
+// Play one decoded buffer to the end (or until stopped), resolving when done.
+function playBuffer(ctx, buffer) {
+  return new Promise((resolve) => {
     const src = ctx.createBufferSource();
     src.buffer = buffer;
     src.connect(ctx.destination);
     src.onended = () => {
       if (currentSource === src) currentSource = null;
+      resolve();
     };
     currentSource = src;
     src.start(0);
+  });
+}
+
+// Speak sentences in order, fetching the next while the current one plays: audio
+// starts as soon as the first sentence is ready, with no gap between sentences.
+async function speakServer(sentences, btn, ctx) {
+  if (!sentences.length) return;
+  const token = ++speakToken;
+  stopAudio(); // silence whatever was playing before this reply
+  setSpeaking(btn, true);
+  try {
+    let nextClip = prefetchClip(ctx, sentences[0]);
+    for (let i = 0; i < sentences.length; i++) {
+      let buffer;
+      try {
+        buffer = await nextClip;
+      } catch (err) {
+        if (token === speakToken) showAudioError(err.message || String(err));
+        return;
+      }
+      if (token !== speakToken) return; // superseded by a newer reply / mute
+      // Kick off the next fetch before playing, so it's ready when this ends.
+      nextClip = prefetchClip(ctx, sentences[i + 1]);
+      if (buffer && buffer.duration) await playBuffer(ctx, buffer);
+      if (token !== speakToken) return;
+    }
   } finally {
     setSpeaking(btn, false);
   }
@@ -388,7 +452,7 @@ async function speak(text, btn) {
 $("#mute-btn").addEventListener("click", () => {
   muted = !muted;
   $("#mute-btn").textContent = muted ? "🔇" : "🔊";
-  if (muted) stopAudio();
+  if (muted) cancelSpeech();
 });
 
 // --- Editor -----------------------------------------------------------------
