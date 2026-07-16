@@ -13,10 +13,13 @@ two pluggable backends chosen entirely by environment variables:
 
 - an **OpenAI-compatible LLM API** for the replies (OpenRouter by default),
   streamed to the browser token by token;
-- an **OpenAI-compatible TTS server** ([Chatterbox](https://github.com/devnen/Chatterbox-TTS-Server))
-  for the spoken audio — or, chosen in Settings, the **device's own built-in
-  voice** (the browser's Web Speech API): instant and offline, no server or GPU,
-  at the cost of a generic voice instead of each friend's custom one.
+- the spoken audio, from one of three engines chosen in Settings: your own
+  **OpenAI-compatible TTS server** ([Chatterbox](https://github.com/devnen/Chatterbox-TTS-Server))
+  for custom per-friend voices; **OpenRouter's hosted TTS** (no server of your
+  own — it reuses the LLM key and defaults to the cheap, fast [Kokoro 82M](https://openrouter.ai/hexgrad/kokoro-82m)
+  with 50+ preset voices); or the **device's own built-in voice** (the browser's
+  Web Speech API): instant and offline, no server or GPU, at the cost of a
+  generic voice.
 
 Characters, chat history, and settings are stored as plain JSON under `DATA_DIR`
 and are shared by everyone using the instance.
@@ -43,8 +46,10 @@ Everything is an environment variable; nothing is baked in.
 | `OPENROUTER_API_KEY` | *(empty)*                      | API key for the LLM. Without it, chat returns a friendly "not set up" message. |
 | `OPENROUTER_BASE_URL`| `https://openrouter.ai/api/v1` | Any OpenAI-compatible chat-completions endpoint.                    |
 | `DEFAULT_MODEL`      | `deepseek/deepseek-v3.2-exp`   | Model used when a character has none of its own. Overridable in-app. |
-| `CHATTERBOX_URL`     | `http://localhost:8004`        | OpenAI-compatible TTS server for spoken replies.                    |
+| `CHATTERBOX_URL`     | `http://localhost:8004`        | OpenAI-compatible TTS server for spoken replies (the `chatterbox` engine).       |
 | `DEFAULT_VOICE`      | *(empty)*                      | Voice for a character that hasn't chosen one. Empty = use the first voice the TTS server offers. |
+| `OPENROUTER_TTS_MODEL` | `hexgrad/kokoro-82m`         | Speech model for the `openrouter` engine. Any of OpenRouter's TTS models; its voice list follows.  |
+| `OPENROUTER_TTS_VOICE` | `af_heart`                   | Default voice for the `openrouter` engine. Must be one the chosen model offers.  |
 | `DATA_DIR`           | `/data`                        | Where characters, chats, and settings persist.                      |
 | `TRUSTED_PROXY_AUTH` | *(off)*                        | See **Login** below. Only set behind a trusted, sole-access proxy.  |
 | `SECURE_COOKIE`      | *(off)*                        | Set to `1` when serving over HTTPS so the session cookie is `Secure`. |

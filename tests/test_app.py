@@ -404,3 +404,105 @@ def test_tts_sends_a_resolved_voice_not_the_bogus_default(auth_client, monkeypat
     resp = auth_client.post("/api/tts", json={"text": "hi", "voice": "default"})
     assert resp.status_code == 200
     assert captured["voice"] == "Alice.wav"
+
+
+# --- OpenRouter as a hosted TTS engine (no voice server of your own) ---------
+#
+# Selecting "openrouter" speaks replies through OpenRouter's /audio/speech using
+# the same key the chat already uses. Voices are the configured model's presets,
+# read from OpenRouter's catalogue; an unknown/leftover voice falls back safely.
+
+
+def test_openrouter_is_a_valid_tts_engine(auth_client):
+    auth_client.put("/api/settings", json={"tts_engine": "openrouter"})
+    assert auth_client.get("/api/settings").json()["tts_engine"] == "openrouter"
+    # The frontend reads the engine from /api/config on boot, so it must be there.
+    assert auth_client.get("/api/config").json()["tts_engine"] == "openrouter"
+
+
+def test_openrouter_voice_resolution(monkeypatch):
+    async def known():
+        return ["af_heart", "am_puck"]
+
+    monkeypatch.setattr(main, "_fetch_openrouter_voices", known)
+    monkeypatch.setattr(main, "OPENROUTER_TTS_VOICE", "af_heart")
+    # A voice the model lists passes through untouched.
+    assert asyncio.run(main._resolve_openrouter_voice("am_puck")) == "am_puck"
+    # Unset / legacy "default" -> the configured default voice.
+    assert asyncio.run(main._resolve_openrouter_voice("")) == "af_heart"
+    assert asyncio.run(main._resolve_openrouter_voice("default")) == "af_heart"
+    # A leftover voice from another engine the model doesn't know -> default.
+    assert asyncio.run(main._resolve_openrouter_voice("Emily.wav")) == "af_heart"
+
+
+def test_openrouter_voice_resolution_trusts_explicit_when_catalogue_unreadable(
+    monkeypatch,
+):
+    async def none():
+        return []
+
+    monkeypatch.setattr(main, "_fetch_openrouter_voices", none)
+    monkeypatch.setattr(main, "OPENROUTER_TTS_VOICE", "af_heart")
+    # Can't validate against a list -> trust the explicit choice, don't override.
+    assert asyncio.run(main._resolve_openrouter_voice("am_puck")) == "am_puck"
+
+
+def test_voices_endpoint_lists_the_models_presets_when_openrouter_is_selected(
+    auth_client, monkeypatch
+):
+    async def presets():
+        return ["af_heart", "am_puck"]
+
+    monkeypatch.setattr(main, "_fetch_openrouter_voices", presets)
+    auth_client.put("/api/settings", json={"tts_engine": "openrouter"})
+    assert auth_client.get("/api/voices").json()["voices"] == ["af_heart", "am_puck"]
+
+
+def test_openrouter_tts_posts_to_openrouter_with_the_key(auth_client, monkeypatch):
+    captured = {}
+
+    class _FakeResp:
+        content = b"AUDIO"
+        headers = {"content-type": "audio/mpeg"}
+
+        def raise_for_status(self):
+            pass
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            return _FakeResp()
+
+    async def voices():
+        return ["af_heart"]
+
+    monkeypatch.setattr(main, "_fetch_openrouter_voices", voices)
+    monkeypatch.setattr(main, "OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setattr(main.httpx, "AsyncClient", _FakeClient)
+    auth_client.put("/api/settings", json={"tts_engine": "openrouter"})
+
+    resp = auth_client.post("/api/tts", json={"text": "hi", "voice": "af_heart"})
+    assert resp.status_code == 200
+    assert resp.content == b"AUDIO"
+    assert captured["url"] == f"{main.OPENROUTER_BASE_URL}/audio/speech"
+    assert captured["json"]["model"] == main.OPENROUTER_TTS_MODEL
+    assert captured["json"]["voice"] == "af_heart"
+    assert captured["headers"]["Authorization"] == "Bearer sk-test"
+
+
+def test_openrouter_tts_without_a_key_fails_clearly(auth_client, monkeypatch):
+    monkeypatch.setattr(main, "OPENROUTER_API_KEY", "")
+    auth_client.put("/api/settings", json={"tts_engine": "openrouter"})
+    resp = auth_client.post("/api/tts", json={"text": "hi"})
+    assert resp.status_code == 502

@@ -58,6 +58,14 @@ CHATTERBOX_URL = os.environ.get("CHATTERBOX_URL", "http://localhost:8004").rstri
 # Chatterbox has no such thing and 404s on it, which silently killed all speech.
 DEFAULT_VOICE = os.environ.get("DEFAULT_VOICE", "").strip()
 
+# The "openrouter" TTS engine speaks replies through OpenRouter's OpenAI-compatible
+# /audio/speech endpoint -- no separate server or GPU of your own, just the LLM
+# key you already have. Kokoro 82M is the default: the cheapest and fastest TTS
+# OpenRouter carries, with 50+ preset voices. Both are overridable so you can pick
+# any of OpenRouter's speech models (its /models list carries each one's voices).
+OPENROUTER_TTS_MODEL = os.environ.get("OPENROUTER_TTS_MODEL", "hexgrad/kokoro-82m")
+OPENROUTER_TTS_VOICE = os.environ.get("OPENROUTER_TTS_VOICE", "af_heart").strip()
+
 # Voice values that mean "none chosen" -- treated as unset when resolving. The
 # "default" string is legacy: older builds hardcoded it and persisted it onto
 # characters, so we still map it back to "unset" rather than send it to the TTS.
@@ -85,14 +93,15 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 # string means "fall back to the env default".
 #
 # tts_engine picks who speaks the replies:
-#   "chatterbox" -- the TTS server (custom voices, but a network + GPU round-trip)
+#   "chatterbox" -- your own TTS server (custom voices, but a network + GPU hop)
+#   "openrouter" -- OpenRouter's hosted TTS (no server of your own; preset voices)
 #   "device"     -- the browser/OS built-in speech (instant, offline, no server)
 DEFAULT_SETTINGS = {
     "default_model": "",
     "default_voice": "",
     "tts_engine": "chatterbox",
 }
-TTS_ENGINES = {"chatterbox", "device"}
+TTS_ENGINES = {"chatterbox", "openrouter", "device"}
 
 # Endpoints reachable without an identity: the config the frontend boots from,
 # and the login/logout flow itself. Everything else under /api/ requires one.
@@ -653,8 +662,76 @@ async def _resolve_voice(requested: str | None) -> str:
     return voices[0] if voices else requested
 
 
+# Preset voices for the configured OpenRouter model, fetched once and kept: the
+# list is stable per model, so there's no reason to hit the catalogue per reply.
+_openrouter_voices: list[str] | None = None
+
+
+async def _fetch_openrouter_voices() -> list[str]:
+    """Preset voice names the configured OpenRouter TTS model offers; [] on failure.
+
+    OpenRouter's /models catalogue carries each speech model's `supported_voices`,
+    so the picker follows OPENROUTER_TTS_MODEL rather than baking in one model's
+    voice set. Cached in-process after the first successful read.
+    """
+    global _openrouter_voices
+    if _openrouter_voices is not None:
+        return _openrouter_voices
+    headers = {"X-Title": "toillprat"}
+    if OPENROUTER_API_KEY:
+        headers["Authorization"] = f"Bearer {OPENROUTER_API_KEY}"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{OPENROUTER_BASE_URL}/models?output_modalities=speech",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            catalogue = resp.json().get("data", [])
+    except (httpx.HTTPError, json.JSONDecodeError, AttributeError):
+        return []
+    for model in catalogue if isinstance(catalogue, list) else []:
+        if isinstance(model, dict) and model.get("id") == OPENROUTER_TTS_MODEL:
+            raw = model.get("supported_voices")
+            raw = raw if isinstance(raw, list) else []
+            voices = [v for v in raw if isinstance(v, str)]
+            _openrouter_voices = voices
+            return voices
+    return []
+
+
+async def _resolve_openrouter_voice(requested: str | None) -> str:
+    """Turn a stored voice into one the OpenRouter model will accept.
+
+    A voice the model lists passes through; an unset/legacy "default" -- or one
+    left over from another engine that this model doesn't know -- falls back to
+    OPENROUTER_TTS_VOICE, so switching engines never 400s the audio. When the
+    catalogue can't be read we trust an explicit choice rather than override it.
+    """
+    requested = (requested or "").strip()
+    if requested.lower() in _UNSET_VOICES:
+        return OPENROUTER_TTS_VOICE
+    voices = await _fetch_openrouter_voices()
+    if voices and requested not in voices:
+        return OPENROUTER_TTS_VOICE
+    return requested
+
+
 @app.get("/api/voices")
 async def api_voices() -> JSONResponse:
+    """Voices for the active engine, so the editor picker matches who will speak.
+
+    Chatterbox lists its own; OpenRouter lists the configured model's presets;
+    the device voice isn't chosen here (the browser owns it), so it lists none.
+    """
+    engine = load_settings()["tts_engine"]
+    if engine == "openrouter":
+        voices = await _fetch_openrouter_voices()
+        if not voices and OPENROUTER_TTS_VOICE:
+            voices = [OPENROUTER_TTS_VOICE]
+        return JSONResponse({"voices": voices})
+    if engine == "device":
+        return JSONResponse({"voices": []})
     voices = await _fetch_voices()
     if not voices and DEFAULT_VOICE:
         # TTS server down / lists nothing — offer the configured default only.
@@ -668,15 +745,50 @@ async def api_tts(request: Request) -> Response:
     text = (body.get("text") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="no text to speak")
+    # "device" reaches here only as a fallback (the browser voice failed); serve
+    # it the same server audio as chatterbox so a reply is never left silent.
+    if load_settings()["tts_engine"] == "openrouter":
+        return await _tts_openrouter(text, body.get("voice"))
+    return await _tts_chatterbox(text, body.get("voice"))
+
+
+async def _tts_chatterbox(text: str, voice: str | None) -> Response:
     payload = {
         "model": "chatterbox",
         "input": text,
-        "voice": await _resolve_voice(body.get("voice")),
+        "voice": await _resolve_voice(voice),
         "response_format": "mp3",
     }
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(f"{CHATTERBOX_URL}/v1/audio/speech", json=payload)
+            resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"TTS failed: {exc}") from exc
+    return Response(
+        content=resp.content,
+        media_type=resp.headers.get("content-type", "audio/mpeg"),
+    )
+
+
+async def _tts_openrouter(text: str, voice: str | None) -> Response:
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=502, detail="TTS failed: no OpenRouter key")
+    payload = {
+        "model": OPENROUTER_TTS_MODEL,
+        "input": text,
+        "voice": await _resolve_openrouter_voice(voice),
+        "response_format": "mp3",
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "X-Title": "toillprat",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{OPENROUTER_BASE_URL}/audio/speech", json=payload, headers=headers
+            )
             resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"TTS failed: {exc}") from exc
