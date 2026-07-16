@@ -773,7 +773,7 @@ async def _tts_chatterbox(text: str, voice: str | None) -> Response:
 
 async def _tts_openrouter(text: str, voice: str | None) -> Response:
     if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=502, detail="TTS failed: no OpenRouter key")
+        raise HTTPException(status_code=502, detail="No OpenRouter key is set.")
     payload = {
         "model": OPENROUTER_TTS_MODEL,
         "input": text,
@@ -789,13 +789,37 @@ async def _tts_openrouter(text: str, voice: str | None) -> Response:
             resp = await client.post(
                 f"{OPENROUTER_BASE_URL}/audio/speech", json=payload, headers=headers
             )
-            resp.raise_for_status()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"TTS failed: {exc}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"Could not reach OpenRouter: {exc}"
+        ) from exc
+    # Surface OpenRouter's own reason (e.g. no credits, model not enabled, bad
+    # voice) rather than a bare status, so the UI can say why there's no sound.
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=_openrouter_tts_error(resp),
+        )
     return Response(
         content=resp.content,
         media_type=resp.headers.get("content-type", "audio/mpeg"),
     )
+
+
+def _openrouter_tts_error(resp: httpx.Response) -> str:
+    """A short, human message from OpenRouter's error response.
+
+    Its errors are JSON like {"error": {"message": "..."}}; fall back to a
+    trimmed body, then to the status code, so something useful always reaches
+    the toast instead of a silent failure.
+    """
+    try:
+        message = resp.json().get("error", {}).get("message")
+    except (json.JSONDecodeError, AttributeError):
+        message = None
+    if not message:
+        message = resp.text.strip()[:200] or f"error {resp.status_code}"
+    return f"Voice service error: {message}"
 
 
 # --- Static SPA (mounted last so /api/* wins) -------------------------------

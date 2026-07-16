@@ -462,11 +462,9 @@ def test_openrouter_tts_posts_to_openrouter_with_the_key(auth_client, monkeypatc
     captured = {}
 
     class _FakeResp:
+        status_code = 200
         content = b"AUDIO"
         headers = {"content-type": "audio/mpeg"}
-
-        def raise_for_status(self):
-            pass
 
     class _FakeClient:
         def __init__(self, *a, **k):
@@ -499,6 +497,41 @@ def test_openrouter_tts_posts_to_openrouter_with_the_key(auth_client, monkeypatc
     assert captured["json"]["model"] == main.OPENROUTER_TTS_MODEL
     assert captured["json"]["voice"] == "af_heart"
     assert captured["headers"]["Authorization"] == "Bearer sk-test"
+
+
+def test_openrouter_tts_surfaces_the_services_error_reason(auth_client, monkeypatch):
+    # A silent "no sound" is the bug we're fixing: OpenRouter's own reason (here,
+    # no credits) must reach the response body so the UI can show it.
+    class _FakeResp:
+        status_code = 402
+
+        def json(self):
+            return {"error": {"message": "Insufficient credits"}}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            return _FakeResp()
+
+    async def voices():
+        return ["af_heart"]
+
+    monkeypatch.setattr(main, "_fetch_openrouter_voices", voices)
+    monkeypatch.setattr(main, "OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setattr(main.httpx, "AsyncClient", _FakeClient)
+    auth_client.put("/api/settings", json={"tts_engine": "openrouter"})
+
+    resp = auth_client.post("/api/tts", json={"text": "hi"})
+    assert resp.status_code == 502
+    assert "Insufficient credits" in resp.json()["detail"]
 
 
 def test_openrouter_tts_without_a_key_fails_clearly(auth_client, monkeypatch):

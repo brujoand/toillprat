@@ -206,6 +206,23 @@ body {
   line-height: 1.2;
 }
 
+/* While the voice is being generated: dim, no pointer, and a gentle pulse so
+   it's clearly "working" rather than stuck. */
+.speak-btn.speaking {
+  cursor: progress;
+  animation: speak-pulse 1s ease-in-out infinite;
+}
+
+@keyframes speak-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 /* --- Composer ------------------------------------------------------------ */
 
 .composer {
