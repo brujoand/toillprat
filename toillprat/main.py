@@ -180,6 +180,9 @@ def normalize_character(data: dict, char_id: str | None = None) -> dict:
         "persona": (data.get("persona") or "").strip(),
         "example_dialogue": (data.get("example_dialogue") or "").strip(),
         "voice": (data.get("voice") or "").strip(),  # "" = resolve at TTS time
+        # BCP-47 tag (e.g. "en-GB") for the device/built-in voice, so each friend
+        # can have its own language/accent. "" = the app default (English).
+        "speech_lang": (data.get("speech_lang") or "").strip(),
         "model": (data.get("model") or "").strip(),  # "" = use the default model
     }
 
