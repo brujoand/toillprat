@@ -102,12 +102,18 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 #   "chatterbox" -- your own TTS server (custom voices, but a network + GPU hop)
 #   "openrouter" -- OpenRouter's hosted TTS (no server of your own; preset voices)
 #   "device"     -- the browser/OS built-in speech (instant, offline, no server)
+#
+# autoplay decides whether a reply speaks on its own ("on") or only when you tap
+# the speaker button on it ("off"). "on" is the default so nothing changes for
+# anyone who liked replies speaking themselves.
 DEFAULT_SETTINGS = {
     "default_model": "",
     "default_voice": "",
     "tts_engine": "chatterbox",
+    "autoplay": "on",
 }
 TTS_ENGINES = {"chatterbox", "openrouter", "device"}
+AUTOPLAY_VALUES = {"on", "off"}
 
 # Endpoints reachable without an identity: the config the frontend boots from,
 # and the login/logout flow itself. Everything else under /api/ requires one.
@@ -223,6 +229,8 @@ def load_settings() -> dict:
     result = {key: data.get(key, default) for key, default in DEFAULT_SETTINGS.items()}
     if result["tts_engine"] not in TTS_ENGINES:
         result["tts_engine"] = DEFAULT_SETTINGS["tts_engine"]
+    if result["autoplay"] not in AUTOPLAY_VALUES:
+        result["autoplay"] = DEFAULT_SETTINGS["autoplay"]
     return result
 
 
@@ -234,6 +242,8 @@ def save_settings(data: dict) -> dict:
             current[key] = (data.get(key) or "").strip()
     if current.get("tts_engine") not in TTS_ENGINES:
         current["tts_engine"] = DEFAULT_SETTINGS["tts_engine"]
+    if current.get("autoplay") not in AUTOPLAY_VALUES:
+        current["autoplay"] = DEFAULT_SETTINGS["autoplay"]
     SETTINGS_PATH.write_text(json.dumps(current, indent=2))
     return current
 
@@ -327,15 +337,17 @@ def _seed_demo_character() -> None:
 @app.get("/api/config")
 def api_config(request: Request) -> JSONResponse:
     player = IDENTITY.identify(request)
+    settings = load_settings()
     return JSONResponse(
         {
             "version": VERSION,
             "auth_mode": IDENTITY.mode,
             "login_enabled": IDENTITY.login_enabled,
             "me": player.name if player else None,
-            # Which voice engine to speak replies with; the frontend needs it up
-            # front, before the first reply, not just on the settings screen.
-            "tts_engine": load_settings()["tts_engine"],
+            # How replies speak; the frontend needs both up front, before the
+            # first reply, not just on the settings screen.
+            "tts_engine": settings["tts_engine"],
+            "autoplay": settings["autoplay"],
         }
     )
 
@@ -565,6 +577,7 @@ def api_get_settings() -> JSONResponse:
             "default_model": settings["default_model"],
             "default_voice": settings["default_voice"],
             "tts_engine": settings["tts_engine"],
+            "autoplay": settings["autoplay"],
             # What chat uses when a character has no model of its own.
             "effective_model": settings["default_model"] or DEFAULT_MODEL,
             "env_default_model": DEFAULT_MODEL,

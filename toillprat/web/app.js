@@ -70,6 +70,10 @@ function ensureAudioCtx() {
 let ttsEngine = "chatterbox";
 let speechPrimed = false;
 
+// Whether a reply speaks on its own, or only when you tap its 🔊. From
+// /api/config at boot; changed in Settings. Tapping 🔊 always works either way.
+let autoplay = true;
+
 // The friends speak English, but the device's default voice follows the OS
 // locale — on a Norwegian iPad that reads English with a heavy accent. So pick
 // an English voice explicitly. Voices can load lazily, hence voiceschanged.
@@ -259,7 +263,7 @@ async function sendMessage(text) {
       }
     }
   }
-  if (reply) speak(reply, btn);
+  if (reply && autoplay) speak(reply, btn); // else it waits for a tap on 🔊
 }
 
 $("#send-form").addEventListener("submit", (e) => {
@@ -640,17 +644,19 @@ async function openSettings() {
   await ensureModels();
   renderModelOptions(settings.default_model || settings.effective_model || "");
   $("#s-tts").value = settings.tts_engine || ttsEngine;
+  $("#s-autoplay").value = settings.autoplay || (autoplay ? "on" : "off");
 }
 
 $("#settings-save-btn").addEventListener("click", async () => {
   const default_model = $("#s-model").value;
   const tts_engine = $("#s-tts").value;
+  const autoplay_choice = $("#s-autoplay").value;
   $("#s-status").textContent = "Saving…";
   try {
     await fetch("/api/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ default_model, tts_engine }),
+      body: JSON.stringify({ default_model, tts_engine, autoplay: autoplay_choice }),
     });
   } catch (_) {
     $("#s-status").textContent = "Could not save. Try again.";
@@ -658,6 +664,7 @@ $("#settings-save-btn").addEventListener("click", async () => {
   }
   if (tts_engine !== ttsEngine) voices = []; // engine changed: refetch its voices
   ttsEngine = tts_engine; // take effect immediately, no reload
+  autoplay = autoplay_choice === "on";
   show("home");
 });
 
@@ -714,6 +721,7 @@ async function boot() {
     config = {};
   }
   if (config.tts_engine) ttsEngine = config.tts_engine;
+  if (config.autoplay) autoplay = config.autoplay === "on";
   const badge = $("#version");
   if (config.version) {
     badge.textContent = "v" + config.version;
