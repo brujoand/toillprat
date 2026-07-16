@@ -65,14 +65,32 @@ function ensureAudioCtx() {
   return audioCtx;
 }
 
+// Which engine speaks replies: "chatterbox" (the TTS server) or "device" (the
+// browser/OS built-in speech — instant, offline). Set from /api/config at boot.
+let ttsEngine = "chatterbox";
+let speechPrimed = false;
+
 // Call from inside a user gesture (a tap or submit) so iOS lets audio play
-// later, even when the actual playback happens after an await.
+// later, even when the actual playback happens after an await. Primes both
+// engines: the AudioContext for Chatterbox audio, and speechSynthesis for the
+// device voice (iOS blocks the first speak() unless it's warmed in a gesture).
 function unlockAudio() {
   const ctx = ensureAudioCtx();
   if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+  if (!speechPrimed && window.speechSynthesis) {
+    speechPrimed = true;
+    try {
+      const warm = new SpeechSynthesisUtterance(" ");
+      warm.volume = 0;
+      window.speechSynthesis.speak(warm);
+    } catch (_) {
+      /* device speech just won't be available */
+    }
+  }
 }
 
 function stopAudio() {
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
   if (!currentSource) return;
   try {
     currentSource.stop();
@@ -226,8 +244,27 @@ $("#send-form").addEventListener("submit", (e) => {
 
 // --- Text-to-speech ---------------------------------------------------------
 
+// The OS/browser built-in voice: instant, offline, no server or GPU. The
+// trade-off is a generic device voice, not a character's custom Chatterbox one.
+function speakDevice(text) {
+  if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === "undefined") {
+    return false;
+  }
+  window.speechSynthesis.cancel(); // only the newest reply speaks
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 1;
+  window.speechSynthesis.speak(utter);
+  return true;
+}
+
 async function speak(text) {
   if (muted || !text) return;
+
+  if (ttsEngine === "device") {
+    if (speakDevice(text)) return;
+    // No device speech here — fall through to the server so audio still works.
+  }
+
   const ctx = ensureAudioCtx();
   if (!ctx) return;
   // Whether we got here from an auto-reply or a tap on the speaker button, make
@@ -466,21 +503,24 @@ async function openSettings() {
     .catch(() => ({}));
   await ensureModels();
   renderModelOptions(settings.default_model || settings.effective_model || "");
+  $("#s-tts").value = settings.tts_engine || ttsEngine;
 }
 
 $("#settings-save-btn").addEventListener("click", async () => {
   const default_model = $("#s-model").value;
+  const tts_engine = $("#s-tts").value;
   $("#s-status").textContent = "Saving…";
   try {
     await fetch("/api/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ default_model }),
+      body: JSON.stringify({ default_model, tts_engine }),
     });
   } catch (_) {
     $("#s-status").textContent = "Could not save. Try again.";
     return;
   }
+  ttsEngine = tts_engine; // take effect immediately, no reload
   show("home");
 });
 
@@ -536,6 +576,7 @@ async function boot() {
   } catch (_) {
     config = {};
   }
+  if (config.tts_engine) ttsEngine = config.tts_engine;
   const badge = $("#version");
   if (config.version) {
     badge.textContent = "v" + config.version;

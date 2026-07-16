@@ -100,6 +100,17 @@
           This is the "brain" that writes the replies. All friends use it unless a
           friend has its own model. If replies stop working, pick another one.
         </p>
+        <label>Voice
+          <select id="s-tts">
+            <option value="chatterbox">Custom voices (server)</option>
+            <option value="device">This device's voice (fast)</option>
+          </select>
+        </label>
+        <p class="hint">
+          "This device's voice" speaks replies instantly using the tablet's own
+          voice — no wait. "Custom voices" uses the voice server for each friend's
+          chosen voice, which sounds better but is slower.
+        </p>
         <div class="editor-actions">
           <button class="big-btn" id="settings-save-btn">Save</button>
         </div>

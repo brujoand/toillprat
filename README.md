@@ -14,7 +14,9 @@ two pluggable backends chosen entirely by environment variables:
 - an **OpenAI-compatible LLM API** for the replies (OpenRouter by default),
   streamed to the browser token by token;
 - an **OpenAI-compatible TTS server** ([Chatterbox](https://github.com/devnen/Chatterbox-TTS-Server))
-  for the spoken audio.
+  for the spoken audio — or, chosen in Settings, the **device's own built-in
+  voice** (the browser's Web Speech API): instant and offline, no server or GPU,
+  at the cost of a generic voice instead of each friend's custom one.
 
 Characters, chat history, and settings are stored as plain JSON under `DATA_DIR`
 and are shared by everyone using the instance.
