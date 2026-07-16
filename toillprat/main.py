@@ -65,6 +65,12 @@ DEFAULT_VOICE = os.environ.get("DEFAULT_VOICE", "").strip()
 # any of OpenRouter's speech models (its /models list carries each one's voices).
 OPENROUTER_TTS_MODEL = os.environ.get("OPENROUTER_TTS_MODEL", "hexgrad/kokoro-82m")
 OPENROUTER_TTS_VOICE = os.environ.get("OPENROUTER_TTS_VOICE", "af_heart").strip()
+# We ask OpenRouter for raw PCM and wrap it in a WAV header ourselves (see
+# _tts_openrouter). PCM has no sample rate of its own, so we must state the one
+# the model emits. Kokoro -- and OpenAI-compatible PCM generally -- is 24 kHz,
+# 16-bit, mono; override this if you point OPENROUTER_TTS_MODEL at a model that
+# differs, or the audio will play at the wrong pitch/speed.
+OPENROUTER_TTS_PCM_RATE = int(os.environ.get("OPENROUTER_TTS_PCM_RATE", "24000"))
 
 # Voice values that mean "none chosen" -- treated as unset when resolving. The
 # "default" string is legacy: older builds hardcoded it and persisted it onto
@@ -778,7 +784,12 @@ async def _tts_openrouter(text: str, voice: str | None) -> Response:
         "model": OPENROUTER_TTS_MODEL,
         "input": text,
         "voice": await _resolve_openrouter_voice(voice),
-        "response_format": "mp3",
+        # PCM, not MP3: these servers return the MP3 as one segment per sentence,
+        # concatenated. The browser's decodeAudioData decodes only the first
+        # segment and drops the rest -- you hear sentence one, then silence, with
+        # no error. Raw PCM wrapped in a single WAV header (below) decodes whole.
+        # (Chatterbox returns one continuous MP3, so its path stays MP3.)
+        "response_format": "pcm",
     }
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -800,10 +811,24 @@ async def _tts_openrouter(text: str, voice: str | None) -> Response:
             status_code=502,
             detail=_openrouter_tts_error(resp),
         )
-    return Response(
-        content=resp.content,
-        media_type=resp.headers.get("content-type", "audio/mpeg"),
+    # Wrap the raw PCM in a WAV container -- unless the server already sent one
+    # (some return "pcm" as a full WAV), which we leave untouched.
+    audio = resp.content
+    if audio[:4] != b"RIFF":
+        audio = _pcm_to_wav(audio, OPENROUTER_TTS_PCM_RATE)
+    return Response(content=audio, media_type="audio/wav")
+
+
+def _pcm_to_wav(pcm: bytes, rate: int, channels: int = 1, bits: int = 16) -> bytes:
+    """Prepend a 44-byte WAV/PCM header so a browser can decode the raw samples."""
+    byte_rate = rate * channels * bits // 8
+    block_align = channels * bits // 8
+    header = b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVE"
+    header += b"fmt " + struct.pack(
+        "<IHHIIHH", 16, 1, channels, rate, byte_rate, block_align, bits
     )
+    header += b"data" + struct.pack("<I", len(pcm))
+    return header + pcm
 
 
 def _openrouter_tts_error(resp: httpx.Response) -> str:

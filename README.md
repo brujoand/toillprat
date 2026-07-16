@@ -50,6 +50,7 @@ Everything is an environment variable; nothing is baked in.
 | `DEFAULT_VOICE`      | *(empty)*                      | Voice for a character that hasn't chosen one. Empty = use the first voice the TTS server offers. |
 | `OPENROUTER_TTS_MODEL` | `hexgrad/kokoro-82m`         | Speech model for the `openrouter` engine. Any of OpenRouter's TTS models; its voice list follows.  |
 | `OPENROUTER_TTS_VOICE` | `af_heart`                   | Default voice for the `openrouter` engine. Must be one the chosen model offers.  |
+| `OPENROUTER_TTS_PCM_RATE` | `24000`                   | Sample rate (Hz) of the model's PCM output, used to wrap it as WAV. Change only if `OPENROUTER_TTS_MODEL` emits a different rate. |
 | `DATA_DIR`           | `/data`                        | Where characters, chats, and settings persist.                      |
 | `TRUSTED_PROXY_AUTH` | *(off)*                        | See **Login** below. Only set behind a trusted, sole-access proxy.  |
 | `SECURE_COOKIE`      | *(off)*                        | Set to `1` when serving over HTTPS so the session cookie is `Secure`. |
