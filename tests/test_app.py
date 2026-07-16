@@ -126,6 +126,31 @@ def test_healthz_is_open(client):
     assert client.get("/healthz").json() == {"ok": True}
 
 
+# --- Static assets revalidate, so a new deploy is seen without clearing cache -
+
+
+def test_the_spa_shell_tells_the_browser_to_revalidate(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-cache"
+
+
+def test_static_assets_revalidate_and_still_get_a_cheap_304(client):
+    resp = client.get("/app.js")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-cache"
+    etag = resp.headers.get("etag")
+    assert etag  # revalidation needs a validator to compare against
+    # An unchanged asset should come back as a 304, not the whole file again.
+    again = client.get("/app.js", headers={"If-None-Match": etag})
+    assert again.status_code == 304
+
+
+def test_api_responses_are_not_forced_to_no_cache(client):
+    # The no-cache policy is for the static SPA, not the JSON API.
+    assert "cache-control" not in {k.lower() for k in client.get("/api/config").headers}
+
+
 # --- Editing an existing friend ---------------------------------------------
 
 

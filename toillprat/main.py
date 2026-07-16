@@ -689,9 +689,26 @@ async def api_tts(request: Request) -> Response:
 # --- Static SPA (mounted last so /api/* wins) -------------------------------
 
 
+# "no-cache" means "revalidate before reusing", NOT "don't cache". Paired with
+# the ETag that FileResponse/StaticFiles already send, the browser gets a cheap
+# 304 when nothing changed but always picks up a fresh deploy immediately --
+# without which a device (iOS Safari especially) keeps serving a stale SPA and
+# never sees new features until someone clears its cache by hand.
+NO_CACHE = "no-cache"
+
+
+class RevalidatingStaticFiles(StaticFiles):
+    """StaticFiles that tells the browser to revalidate every asset."""
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = NO_CACHE
+        return response
+
+
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(WEB_DIR / "index.html")
+    return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": NO_CACHE})
 
 
 @app.get("/healthz")
@@ -699,4 +716,4 @@ def healthz() -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
-app.mount("/", StaticFiles(directory=str(WEB_DIR)), name="web")
+app.mount("/", RevalidatingStaticFiles(directory=str(WEB_DIR)), name="web")
