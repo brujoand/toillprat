@@ -202,23 +202,24 @@ function addBubble(role, text, withSpeaker) {
   bubble.className = "bubble " + (isBot ? "bot" : "user");
   const span = document.createElement("span");
   span.textContent = text;
+  let btn = null;
   if (isBot && withSpeaker) {
-    const btn = document.createElement("button");
+    btn = document.createElement("button");
     btn.className = "speak-btn";
     btn.textContent = "🔊";
-    btn.onclick = () => speak(span.textContent);
+    btn.onclick = () => speak(span.textContent, btn);
     bubble.append(btn, span);
   } else {
     bubble.appendChild(span);
   }
   box.appendChild(bubble);
   box.scrollTop = box.scrollHeight;
-  return span;
+  return { span, btn };
 }
 
 async function sendMessage(text) {
   addBubble("user", text, false);
-  const span = addBubble("assistant", "", true);
+  const { span, btn } = addBubble("assistant", "", true);
   span.textContent = "…";
 
   const resp = await fetch("/api/chat", {
@@ -258,7 +259,7 @@ async function sendMessage(text) {
       }
     }
   }
-  if (reply) speak(reply);
+  if (reply) speak(reply, btn);
 }
 
 $("#send-form").addEventListener("submit", (e) => {
@@ -289,7 +290,28 @@ function speakDevice(text) {
   return true;
 }
 
-async function speak(text) {
+// Reflect "voice is being generated" on the speaker button (⏳ while working),
+// so there's always a sign something is happening -- and nothing fails silently.
+function setSpeaking(btn, on) {
+  if (!btn) return;
+  btn.disabled = on;
+  btn.textContent = on ? "⏳" : "🔊";
+  btn.classList.toggle("speaking", on);
+}
+
+// Surface the server's actual reason (e.g. no OpenRouter credits, bad voice)
+// instead of a bare status code, so a silent "no sound" becomes explainable.
+async function ttsErrorMessage(resp) {
+  try {
+    const data = await resp.json();
+    if (data && data.detail) return String(data.detail);
+  } catch (_) {
+    /* not JSON — fall back to the status code */
+  }
+  return `Voice unavailable (error ${resp.status}).`;
+}
+
+async function speak(text, btn) {
   if (muted || !text) return;
 
   if (ttsEngine === "device") {
@@ -298,51 +320,69 @@ async function speak(text) {
   }
 
   const ctx = ensureAudioCtx();
-  if (!ctx) return;
+  if (!ctx) {
+    showAudioError("This device can't play audio.");
+    return;
+  }
   // Whether we got here from an auto-reply or a tap on the speaker button, make
   // sure the context is running; a tap is what lets iOS grant this.
   if (ctx.state === "suspended") {
     try {
       await ctx.resume();
     } catch (_) {
-      /* stays suspended — playback below just won't make sound */
+      /* handled just below */
     }
   }
+  if (ctx.state === "suspended") {
+    // iOS keeps audio locked until a real tap. Auto-play after a reply isn't
+    // one, so tell the user how to hear it instead of playing to silence.
+    showAudioError("Tap 🔊 on a message to turn on sound.");
+    return;
+  }
 
-  let resp;
+  setSpeaking(btn, true);
   try {
-    resp = await fetch("/api/tts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, voice: current && current.voice }),
-    });
-  } catch (_) {
-    showAudioError("Couldn't reach the server for audio.");
-    return;
-  }
-  if (!resp.ok) {
-    showAudioError(`Voice unavailable (error ${resp.status}).`);
-    return;
-  }
+    let resp;
+    try {
+      resp = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voice: current && current.voice }),
+      });
+    } catch (_) {
+      showAudioError("Couldn't reach the server for audio.");
+      return;
+    }
+    if (!resp.ok) {
+      showAudioError(await ttsErrorMessage(resp));
+      return;
+    }
 
-  let buffer;
-  try {
-    // decodeAudioData needs the raw bytes; no Blob URL, which iOS won't play.
-    buffer = await ctx.decodeAudioData(await resp.arrayBuffer());
-  } catch (_) {
-    showAudioError("The voice audio couldn't be played.");
-    return;
-  }
+    let buffer;
+    try {
+      // decodeAudioData needs the raw bytes; no Blob URL, which iOS won't play.
+      buffer = await ctx.decodeAudioData(await resp.arrayBuffer());
+    } catch (_) {
+      showAudioError("The voice audio couldn't be played.");
+      return;
+    }
+    if (!buffer || !buffer.duration) {
+      showAudioError("The voice came back empty.");
+      return;
+    }
 
-  stopAudio(); // only the newest reply speaks
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-  src.connect(ctx.destination);
-  src.onended = () => {
-    if (currentSource === src) currentSource = null;
-  };
-  currentSource = src;
-  src.start(0);
+    stopAudio(); // only the newest reply speaks
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    src.onended = () => {
+      if (currentSource === src) currentSource = null;
+    };
+    currentSource = src;
+    src.start(0);
+  } finally {
+    setSpeaking(btn, false);
+  }
 }
 
 $("#mute-btn").addEventListener("click", () => {
