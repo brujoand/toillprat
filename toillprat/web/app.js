@@ -70,6 +70,33 @@ function ensureAudioCtx() {
 let ttsEngine = "chatterbox";
 let speechPrimed = false;
 
+// The friends speak English, but the device's default voice follows the OS
+// locale — on a Norwegian iPad that reads English with a heavy accent. So pick
+// an English voice explicitly. Voices can load lazily, hence voiceschanged.
+const SPEECH_LANG = "en-US";
+let englishVoice = null;
+
+function pickEnglishVoice() {
+  if (!window.speechSynthesis) return;
+  const voices = window.speechSynthesis.getVoices() || [];
+  const english = voices.filter(
+    (v) => /^en[-_]?/i.test(v.lang || "") || /english/i.test(v.name || ""),
+  );
+  const preferring = (code) =>
+    english.find((v) => (v.lang || "").toLowerCase().replace("_", "-").startsWith(code));
+  englishVoice =
+    preferring("en-us") ||
+    preferring("en-gb") ||
+    english.find((v) => v.default) ||
+    english[0] ||
+    null;
+}
+
+if (window.speechSynthesis) {
+  pickEnglishVoice();
+  window.speechSynthesis.onvoiceschanged = pickEnglishVoice;
+}
+
 // Call from inside a user gesture (a tap or submit) so iOS lets audio play
 // later, even when the actual playback happens after an await. Primes both
 // engines: the AudioContext for Chatterbox audio, and speechSynthesis for the
@@ -82,6 +109,8 @@ function unlockAudio() {
     try {
       const warm = new SpeechSynthesisUtterance(" ");
       warm.volume = 0;
+      warm.lang = SPEECH_LANG;
+      if (englishVoice) warm.voice = englishVoice;
       window.speechSynthesis.speak(warm);
     } catch (_) {
       /* device speech just won't be available */
@@ -253,6 +282,9 @@ function speakDevice(text) {
   window.speechSynthesis.cancel(); // only the newest reply speaks
   const utter = new SpeechSynthesisUtterance(text);
   utter.rate = 1;
+  utter.lang = SPEECH_LANG;
+  if (!englishVoice) pickEnglishVoice(); // voices may have loaded since boot
+  if (englishVoice) utter.voice = englishVoice;
   window.speechSynthesis.speak(utter);
   return true;
 }
