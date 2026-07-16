@@ -552,6 +552,7 @@ $("#settings-save-btn").addEventListener("click", async () => {
     $("#s-status").textContent = "Could not save. Try again.";
     return;
   }
+  if (tts_engine !== ttsEngine) voices = []; // engine changed: refetch its voices
   ttsEngine = tts_engine; // take effect immediately, no reload
   show("home");
 });

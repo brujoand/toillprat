@@ -103,13 +103,15 @@
         <label>Voice
           <select id="s-tts">
             <option value="chatterbox">Custom voices (server)</option>
+            <option value="openrouter">Online voices (OpenRouter)</option>
             <option value="device">This device's voice (fast)</option>
           </select>
         </label>
         <p class="hint">
           "This device's voice" speaks replies instantly using the tablet's own
-          voice — no wait. "Custom voices" uses the voice server for each friend's
-          chosen voice, which sounds better but is slower.
+          voice — no wait. "Custom voices" uses your own voice server for each
+          friend's chosen voice. "Online voices" uses OpenRouter's hosted voices —
+          no voice server of your own, just the same key the replies already use.
         </p>
         <div class="editor-actions">
           <button class="big-btn" id="settings-save-btn">Save</button>
